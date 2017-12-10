@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"context"
 )
 
 var (
@@ -184,6 +185,34 @@ var NewErrorFuncs = make(map[int]NewErrorFun)
 // extension is added to the 'NewErrorFuncs' map. It should not be used. It is
 // exported for use in the extension sub-packages.
 var NewExtErrorFuncs = make(map[string]map[int]NewErrorFun)
+
+// ContextError is an error that wraps a built-in error, used for handling when
+// an error is produced by a context (e.g. when it is canceled).
+type ContextError struct{
+	Err error
+}
+
+// NewContextError produces a new context error.
+func NewContextError(err error) *ContextError {
+	if err == nil {
+		return nil
+	}
+
+	return &ContextError{
+		Err: err,
+	}
+}
+
+// SequenceId is noop, to fulfil the xgb error interface.
+func (e *ContextError) SequenceId() uint16 { return 0 }
+
+// BadId is noop, to fulfil the xgb error interface.
+func (e *ContextError) BadId() uint32 { return 0 }
+
+// Error satisfies the built-in error interface.
+func (e *ContextError) Error() string {
+	return e.Err.Error()
+}
 
 // eventOrError corresponds to values that can be either an event or an
 // error.
@@ -537,7 +566,23 @@ func processEventOrError(everr eventOrError) (Event, Error) {
 //
 // If both the event and error are nil, then the connection has been closed.
 func (c *Conn) WaitForEvent() (Event, Error) {
-	return processEventOrError(<-c.eventChan)
+	return c.WaitForEventContext(context.Background())
+}
+
+// WaitForEventContext returns the next event from the server. It will block
+// until an event is available. WaitForEventContext returns either an event
+// or an error. (Returning both is a bug). Note that an error here is an X
+// error, or a context error, and likely not an XGB error. Also, X errors are
+// sometimes completely expected (and you miay want to ignore them in some
+// cases). If both the event and error are nil, then the connection has been
+// closed.
+func (c *Conn) WaitForEventContext(ctx context.Context) (Event, Error) {
+	select {
+	case eventErr := <-c.eventChan:
+		return processEventOrError(eventErr)
+	case <-ctx.Done():
+		return nil, NewContextError(ctx.Err())
+	}
 }
 
 // PollForEvent returns the next event from the server if one is available in
